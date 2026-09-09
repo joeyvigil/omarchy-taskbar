@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Hyprland
@@ -33,10 +34,11 @@ BarWidget {
   readonly property bool dimWhenClosed: root.setting("dimWhenClosed", true) === true
   readonly property bool cycleWindows: root.setting("cycleWindows", true) === true
   readonly property bool showAddButton: root.setting("showAddButton", true) === true
+  readonly property bool showRunningApps: root.setting("showRunningApps", true) === true
 
   // With nothing pinned and the + turned off the widget would be invisible, so
   // keep a trailing slot in that case purely as an affordance.
-  readonly property bool showTrailing: root.showAddButton || root.pinned.length === 0
+  readonly property bool showTrailing: root.showAddButton || root.slotCount === 0
 
   readonly property int slotSize: root.iconSize + Style.spaceReal(9)
 
@@ -48,6 +50,38 @@ BarWidget {
   // depend on.
   property int windowSerial: 0
   property int entrySerial: 0
+
+  // All installed desktop entries, as a flat array. Re-read whenever
+  // entrySerial bumps so the icon/反查 sets track app installs.
+  readonly property var appEntries: {
+    var s = root.entrySerial // binding dependency
+    var out = []
+    try {
+      var vals = DesktopEntries.applications ? DesktopEntries.applications.values : null
+      if (vals) { for (var i = 0; i < vals.length; i++) out.push(vals[i]) }
+    } catch (e) {}
+    return out
+  }
+
+  // Combined model: pinned slots first, then transient running slots.
+  property var slotsCache: []
+
+  readonly property int slotCount: root.slotsCache.length
+
+  function rebuildSlots() {
+    var running = root.showRunningApps
+      ? AppModel.runningGroups(root.pinned, root.windows, root.appEntries)
+      : []
+    var merged = []
+    var p = root.pinned
+    for (var j = 0; j < p.length; j++) merged.push(p[j])
+    for (var k = 0; k < running.length; k++) merged.push(running[k])
+    root.slotsCache = merged
+  }
+
+  onPinnedChanged: root.rebuildSlots()
+  onShowRunningAppsChanged: root.rebuildSlots()
+  Component.onCompleted: root.rebuildSlots()
 
   readonly property string activeAddress: Hyprland.activeToplevel
     ? String(Hyprland.activeToplevel.address || "") : ""
@@ -348,7 +382,16 @@ BarWidget {
 
   function promptActions(record) {
     var index = AppModel.indexOfKey(root.pinned, record.key)
-    if (index < 0) return
+    if (index < 0) {
+      // A transient running slot (not pinned yet).
+      if (!record || record.temp !== true) return
+      var rOptions = ["\tNew instance\tlaunch"]
+      if (record.desktopId && !AppModel.hasDesktopId(root.pinned, record.desktopId)) {
+        rOptions.push("\tPin to taskbar\tpin")
+      }
+      root.runPicker("running", String(record.desktopId || record.key), root.labelFor(record), rOptions)
+      return
+    }
 
     var options = ["\tNew instance\tlaunch"]
     if (index > 0) options.push("\t" + (root.vertical ? "Move up" : "Move left") + "\tback")
@@ -371,6 +414,14 @@ BarWidget {
       return
     }
     if (kind === "actions") root.runAction(context, value)
+    if (kind === "running") {
+      if (value === "pin") { root.pinApp(context); return }
+      if (value === "launch") {
+        var rec = { desktopId: context }
+        root.launch(rec)
+        return
+      }
+    }
   }
 
   function runAction(key, action) {
@@ -423,6 +474,10 @@ BarWidget {
     function onRawEvent(event) {
       // openwindow, closewindow, movewindow, windowtitle, activewindow[v2].
       if (String(event.name || "").indexOf("window") !== -1) root.windowSerial++
+      // Rebuild the running-slot set only when a window opens or closes, not on
+      // mere focus/title changes (those only refresh each slot's own bindings).
+      var n = String(event.name || "")
+      if (n === "openwindow" || n === "closewindow") root.rebuildSlots()
     }
   }
 
@@ -435,12 +490,12 @@ BarWidget {
   GridLayout {
     id: layout
     anchors.fill: parent
-    columns: root.vertical ? 1 : Math.max(1, root.pinned.length + (root.showTrailing ? 1 : 0))
+    columns: root.vertical ? 1 : Math.max(1, root.slotCount + (root.showTrailing ? 1 : 0))
     columnSpacing: root.vertical ? 0 : root.gap
     rowSpacing: root.vertical ? root.gap : 0
 
     Repeater {
-      model: root.pinned
+      model: root.slotsCache
 
       WidgetButton {
         id: slot
@@ -462,16 +517,38 @@ BarWidget {
           return entry && entry.icon ? String(entry.icon) : String(modelData.desktopId || "")
         }
         readonly property string appLabel: root.labelFor(modelData)
+        property bool hovered: false
 
         bar: root.bar
         labelVisible: false
         hasVisualContent: true
         dimmed: root.dimWhenClosed && !running
-        tooltipText: appLabel + (matched.length > 1 ? " (" + matched.length + " windows)" : "")
+        tooltipText: {
+          if (!root.hoverWindowList)
+            return appLabel + (matched.length > 1 ? " (" + matched.length + " windows)" : "")
+          if (matched.length >= root.listMinWindows) return ""
+          if (matched.length === 1) {
+            var t = String(matched[0].title || "").trim()
+            return t ? appLabel + " — " + t : appLabel
+          }
+          return appLabel
+        }
         fixedWidth: root.vertical ? root.barSize : root.slotSize
         fixedHeight: root.vertical ? root.slotSize : root.barSize
 
-        onPressed: function(button) { root.handlePress(slot.modelData, button) }
+        onPressed: function(button) {
+          if (root.listOpen) root.closeList()
+          root.suppressListHover()
+          root.handlePress(slot.modelData, button)
+        }
+
+        HoverHandler {
+          onHoveredChanged: {
+            slot.hovered = hovered
+            if (hovered) root.slotEntered(slot)
+            else root.slotExited(slot)
+          }
+        }
 
         Image {
           id: iconImage
@@ -537,6 +614,190 @@ BarWidget {
       fixedHeight: root.vertical ? root.slotSize : root.barSize
 
       onPressed: function(button) { if (root.showAddButton) root.promptAdd() }
+    }
+  }
+
+  // ================================================== hover window list
+  readonly property bool hoverWindowList: root.setting("hoverWindowList", true) === true
+  readonly property int listMinWindows: Math.max(1, root.setting("hoverListMinWindows", 2))
+  readonly property int listRowHeight: 30
+  readonly property int listRowGap: 3
+  readonly property int listMaxRows: 8
+  readonly property int listContentWidth: 340
+  property Item listAnchor: null
+  property var listRecord: null
+  property bool listOpen: false
+  property bool hoverSuppressed: false
+  readonly property color listFg: bar ? bar.barForeground : Color.foreground
+  readonly property color listActive: bar ? bar.urgent : Color.urgent
+  readonly property color listHoverFill: Util.alpha(Color.accent, 0.18)
+  readonly property string listFont: bar ? bar.fontFamily : Style.font.family
+  readonly property var listMatches: root.listRecord
+    ? AppModel.windowsFor(root.listRecord, root.windows) : []
+  readonly property int listVisibleRows: Math.max(0, Math.min(root.listMaxRows, root.listMatches.length))
+
+  function listContentHeight() {
+    if (root.listVisibleRows === 0) return 0
+    return root.listVisibleRows * root.listRowHeight
+         + (root.listVisibleRows - 1) * root.listRowGap
+  }
+
+  Timer { id: listOpenTimer; interval: 320; onTriggered: root.commitList() }
+  Timer { id: listCloseTimer; interval: 260; onTriggered: root.expireList() }
+  Timer { id: listSuppressTimer; interval: 450; onTriggered: root.hoverSuppressed = false }
+
+  function slotEntered(slot) {
+    if (!slot || !root.hoverWindowList) return
+    listCloseTimer.stop()
+    if (!slot.matched || slot.matched.length < root.listMinWindows) {
+      if (root.listOpen) root.closeList()
+      return
+    }
+    if (root.hoverSuppressed) return
+    if (root.listOpen) {
+      if (root.listAnchor !== slot) root.commitList(slot)
+      return
+    }
+    root.listAnchor = slot
+    root.listRecord = slot.modelData
+    listOpenTimer.restart()
+  }
+
+  function slotExited(slot) {
+    if (!slot || root.listAnchor !== slot) return
+    if (!root.listOpen) {
+      listOpenTimer.stop()
+      root.listAnchor = null
+      root.listRecord = null
+      return
+    }
+    listCloseTimer.restart()
+  }
+
+  function commitList(slot) {
+    var target = slot || root.listAnchor
+    if (!target || !target.matched || target.matched.length < root.listMinWindows) return
+    root.listAnchor = target
+    root.listRecord = target.modelData
+    root.listOpen = true
+    if (root.bar && typeof root.bar.hideTooltip === "function") root.bar.hideTooltip(target)
+  }
+
+  function listHoverChanged(hovered) {
+    if (!root.listOpen) return
+    if (hovered) listCloseTimer.stop()
+    else listCloseTimer.restart()
+  }
+
+  function expireList() {
+    if (root.listOpen && root.listAnchor && root.listAnchor.hovered === true) return
+    if (root.listOpen && windowListPopup.containsMouse) return
+    root.closeList()
+  }
+
+  function closeList() {
+    listOpenTimer.stop()
+    listCloseTimer.stop()
+    root.listOpen = false
+    root.listAnchor = null
+    root.listRecord = null
+  }
+
+  function suppressListHover() {
+    root.hoverSuppressed = true
+    listSuppressTimer.restart()
+  }
+
+  function focusListWindow(index) {
+    var all = root.listMatches
+    if (!all || index < 0 || index >= all.length) return
+    var descriptor = all[index]
+    root.closeList()
+    root.focusWindow(descriptor)
+  }
+
+  onListMatchesChanged: if (root.listOpen && root.listMatches.length < root.listMinWindows) root.closeList()
+
+  PopupCard {
+    id: windowListPopup
+    owner: root
+    bar: root.bar
+    anchorItem: root.listOpen ? root.listAnchor : null
+    open: root.listOpen && root.listAnchor !== null && root.listMatches.length >= root.listMinWindows
+    triggerMode: "hover"
+    margin: 6
+    padding: 6
+    contentWidth: windowListPopup.fittedContentWidth(root.listContentWidth)
+    contentHeight: windowListPopup.fittedContentHeight(root.listContentHeight())
+
+    Flickable {
+      id: listFlick
+      anchors.fill: parent
+      clip: true
+      contentWidth: width
+      contentHeight: listColumn.implicitHeight
+      boundsBehavior: Flickable.StopAtBounds
+      interactive: contentHeight > height
+      ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+      HoverHandler {
+        onHoveredChanged: root.listHoverChanged(hovered)
+      }
+
+      Column {
+        id: listColumn
+        width: listFlick.width
+        spacing: root.listRowGap
+        Repeater {
+          model: root.listMatches
+          delegate: listRowComponent
+        }
+      }
+    }
+  }
+
+  Component {
+    id: listRowComponent
+    Rectangle {
+      id: rowItem
+      required property var modelData
+      required property int index
+      readonly property bool isActive: String(rowItem.modelData.address || "") === root.activeAddress
+      readonly property string rowText: {
+        var title = String(rowItem.modelData.title || "").trim()
+        if (title) return title
+        var label = root.labelFor(root.listRecord)
+        return label || "Untitled window"
+      }
+      width: parent ? parent.width : 0
+      height: root.listRowHeight
+      radius: Math.max(2, 6)
+
+      color: rowPointer.containsMouse ? root.listHoverFill : "transparent"
+
+      Text {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.leftMargin: 10
+        anchors.rightMargin: 10
+        text: (rowItem.isActive ? "\uf0d9  " : "") + rowItem.rowText
+        color: rowItem.isActive ? root.listActive : root.listFg
+        font.family: root.listFont
+        font.pixelSize: 12
+        elide: Text.ElideRight
+        textFormat: Text.PlainText
+        verticalAlignment: Text.AlignVCenter
+      }
+
+      MouseArea {
+        id: rowPointer
+        anchors.fill: parent
+        hoverEnabled: true
+        enabled: root.listOpen
+        cursorShape: Qt.PointingHandCursor
+        onClicked: root.focusListWindow(rowItem.index)
+      }
     }
   }
 }

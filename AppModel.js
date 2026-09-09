@@ -234,3 +234,103 @@ function serialize(records) {
   }
   return out
 }
+
+// ------------------------------------------------------------------ running
+// Windows that are open but do not belong to any pinned entry are collected
+// into transient "running" slots (one icon per desktop entry, never persisted).
+
+function entryTier(entry, token) {
+  if (!entry || !token) return 0
+  var t = String(token).toLowerCase()
+  var id = String(entry.id || "")
+  var idStripped = id.length > 8 && id.slice(-8).toLowerCase() === ".desktop"
+    ? id.slice(0, -8) : id
+  var startup = String(entry.startupClass || "")
+  var exec = String(entry.execString || "").trim().split(/\s+/)[0].split("/").pop()
+  if (t === id.toLowerCase() || t === idStripped.toLowerCase()) return 3
+  if (startup && plausibleWindowClass(startup) && t === startup.toLowerCase()) return 3
+  if (exec && exec !== "env" && exec !== "uwsm-app" && exec !== "sh"
+      && t === exec.toLowerCase()) return 3
+  if (defaultCovers(id, token)) return 2
+  var web = webappPattern(String(entry.execString || ""))
+  if (web) { try { if (new RegExp(web, "i").test(token)) return 2 } catch (e) {} }
+  if (t === String(entry.name || "").toLowerCase()) return 1
+  return 0
+}
+
+function entryForToken(entries, token) {
+  if (!token) return null
+  var best = null, bestTier = 0
+  var all = toArray(entries)
+  for (var i = 0; i < all.length; i++) {
+    var tier = entryTier(all[i], token)
+    if (tier > bestTier) { bestTier = tier; best = all[i] }
+  }
+  return best
+}
+
+// Transient slots: windows not claimed by any pinned record, grouped by the
+// desktop entry they resolve to. Returns an array of records shaped so the
+// existing delegate (icon, running indicator, focus highlight, click to
+// focus/cycle) works unchanged. Never persisted.
+function runningGroups(records, windows, entries) {
+  var all = toArray(windows)
+  var claimed = {}
+  var recs = toArray(records)
+  for (var i = 0; i < recs.length; i++) {
+    var ws = windowsFor(recs[i], all)
+    for (var k = 0; k < ws.length; k++) {
+      if (ws[k] && ws[k].address) claimed[ws[k].address] = true
+    }
+  }
+  var buckets = [], byKey = {}
+  function tokensOf(w) {
+    var o = []
+    if (w.cls) o.push(String(w.cls))
+    if (w.appId && w.appId !== w.cls) o.push(String(w.appId))
+    return o
+  }
+  for (var j = 0; j < all.length; j++) {
+    var win = all[j]
+    if (!win || (win.address && claimed[win.address])) continue
+    var tokens = tokensOf(win)
+    var entry = null, tier = 0
+    for (var t = 0; t < tokens.length; t++) {
+      var e = entryForToken(entries, tokens[t])
+      var tr = e ? entryTier(e, tokens[t]) : 0
+      if (tr > tier) { tier = tr; entry = e }
+    }
+    var key = entry ? String(entry.id || "") : ("anon:" + (tokens[0] || win.address))
+    var b = byKey[key]
+    if (!b) {
+      b = {
+        key: key,
+        desktopId: entry ? String(entry.id || "") : "",
+        label: entry ? String(entry.name || entry.id) : (tokens[0] || "App"),
+        icon: entry ? String(entry.icon || "") : (tokens[0] || ""),
+        tokens: {},
+        temp: true
+      }
+      byKey[key] = b
+      buckets.push(b)
+    }
+    for (var u = 0; u < tokens.length; u++) b.tokens[tokens[u]] = true
+  }
+  var out = []
+  for (var g = 0; g < buckets.length; g++) {
+    var b = buckets[g]
+    var list = Object.keys(b.tokens)
+    if (!list.length) continue
+    var alts = []
+    for (var a = 0; a < list.length; a++) alts.push(escapeRegex(list[a]))
+    out.push({
+      desktopId: b.desktopId,
+      icon: b.icon,
+      label: b.label,
+      match: "^(" + alts.join("|") + ")$",
+      key: b.key,
+      temp: true
+    })
+  }
+  return out
+}

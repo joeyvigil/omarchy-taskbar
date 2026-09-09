@@ -5,28 +5,31 @@
   "version": "0.3.1",
   "author": "Joey Vigil",
   "license": "MIT",
-  "description": "Pinned app icons in the bar with running-state indicators; pin and unpin from the bar itself",
-  "kinds": [
-    "bar-widget"
-  ],
-  "entryPoints": {
-    "barWidget": "BarWidget.qml"
-  },
-  "barWidget": {
-    "displayName": "Taskbar",
-    "description": "Pinned app icons with running indicators; left = launch or focus, right = actions, middle = new instance",
-    "category": "Launcher",
-    "allowMultiple": false,
-    "defaultSection": "left",
-    "defaults": {
-      "apps": [],
-      "iconSize": 17,
-      "spacing": 2,
-      "runningIndicator": true,
-      "dimWhenClosed": true,
-      "cycleWindows": true,
-      "showAddButton": true
+    "description": "Pinned apps and running windows in the bar with hover window list; pin and unpin from the bar itself",
+    "kinds": [
+        "bar-widget"
+    ],
+    "entryPoints": {
+        "barWidget": "BarWidget.qml"
     },
+    "barWidget": {
+        "displayName": "Taskbar",
+        "description": "Pinned app icons plus running apps; left = launch or focus, right = actions, middle = new instance; hover a running app to pick a window",
+        "category": "Launcher",
+        "allowMultiple": false,
+        "defaultSection": "left",
+        "defaults": {
+            "apps": [],
+            "iconSize": 17,
+            "spacing": 2,
+            "runningIndicator": true,
+            "dimWhenClosed": true,
+            "cycleWindows": true,
+            "showAddButton": true,
+            "showRunningApps": true,
+            "hoverWindowList": true,
+            "hoverListMinWindows": 2
+        },
     "schema": [
       {
         "key": "apps",
@@ -62,6 +65,25 @@
         "key": "showAddButton",
         "type": "bool",
         "label": "Show the + button for pinning apps"
+      },
+      {
+        "key": "showRunningApps",
+        "type": "bool",
+        "label": "Show running apps that are not pinned"
+      },
+      {
+        "key": "hoverWindowList",
+        "type": "bool",
+        "label": "Show window list on hover"
+      },
+      {
+        "key": "hoverListMinWindows",
+        "type": "number",
+        "label": "Min windows to show hover list",
+        "min": 1,
+        "max": 10,
+        "step": 1,
+        "defaultValue": 2
       }
     ]
   }
