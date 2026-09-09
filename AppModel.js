@@ -49,19 +49,38 @@ function defaultPattern(desktopId) {
   return "\\b(" + escaped.join("|") + ")\\b"
 }
 
+// The pattern for one exact window class, as reported. Deliberately tighter
+// than defaultPattern: that one is loose on purpose, which is right for a pin
+// the user chose but would let two unrelated classes share an icon here.
+function exactPattern(value) {
+  return "^" + escapeRegex(value) + "$"
+}
+
 // An explicit `match` is used as a raw regex, deliberately without the word
 // boundaries the derived pattern adds. Auto-filled web app patterns end
 // mid-token (chrome-discord.com__channels_@me-Default), where a trailing \b
 // would never fire because "_" is a word character.
+// Compiled matchers live on the .pragma library scope, which lasts for the
+// process and is shared by every bar instance. Keyed on the pattern text, so
+// it never needs invalidating — the same pattern always compiles to the same
+// matcher. Safe to share one RegExp: there is no /g or /y flag, so .test()
+// never touches lastIndex.
+var compiledMatchers = {}
+
 function matcherFor(record) {
   var pattern = record.match ? String(record.match) : defaultPattern(record.desktopId)
   if (!pattern) return null
+  if (pattern in compiledMatchers) return compiledMatchers[pattern]
+
+  var compiled = null
   try {
-    return new RegExp(pattern, "i")
+    compiled = new RegExp(pattern, "i")
   } catch (e) {
     // A bad user regex should disable that one button, not break the bar.
-    return null
+    compiled = null
   }
+  compiledMatchers[pattern] = compiled
+  return compiled
 }
 
 // True when the derived pattern already covers this window class, meaning the
@@ -159,6 +178,104 @@ function windowsFor(record, windows) {
     if (windowMatches(record, matcher, all[i])) out.push(all[i])
   }
   return out
+}
+
+// Windows that no pinned record claims, grouped into one synthetic record per
+// application. The widget renders these after the pinned strip, so an app you
+// never pinned still gets an icon while it is open and loses it when its last
+// window closes — the way a Windows or macOS taskbar behaves.
+function unpinnedRecords(pinned, windows) {
+  var all = toArray(windows)
+  if (!all.length) return []
+
+  // Resolve each pinned matcher once rather than per window.
+  var pins = toArray(pinned)
+  var claims = []
+  for (var p = 0; p < pins.length; p++) {
+    claims.push({ record: pins[p], matcher: matcherFor(pins[p]) })
+  }
+
+  // Lowered identity -> the identity as the window actually reported it. The
+  // one map both de-duplicates and orders: its keys are already lowercased, so
+  // they sort without a comparator.
+  var byKey = {}
+  for (var i = 0; i < all.length; i++) {
+    var win = all[i]
+    var claimed = false
+    for (var c = 0; c < claims.length; c++) {
+      if (windowMatches(claims[c].record, claims[c].matcher, win)) {
+        claimed = true
+        break
+      }
+    }
+    if (claimed) continue
+
+    // appId is the Wayland identity a desktop entry is keyed on; cls is the
+    // fallback for clients that report only a class.
+    var identity = String(win.appId || win.cls || "")
+    if (!identity) continue
+    var key = identity.toLowerCase()
+    if (!(key in byKey)) byKey[key] = identity
+  }
+
+  // Sorted, because the compositor reorders its toplevel list as focus moves
+  // and an icon that changes place under the pointer is worse than no icon.
+  var keys = Object.keys(byKey).sort()
+  var out = []
+  for (var k = 0; k < keys.length; k++) {
+    var id = byKey[keys[k]]
+    // Built through normalizeApp so a synthetic record has exactly the shape a
+    // stored one does and the widget never has to ask which kind it is holding.
+    var record = normalizeApp({ desktopId: id, match: exactPattern(id) }, k)
+    if (!record) continue
+    // Not from shell.json: never written back, and its right-click menu offers
+    // pinning rather than unpinning and reordering. serialize() whitelists
+    // fields, so neither of these can reach the config even by accident.
+    record.unpinned = true
+    // Namespaced so it cannot collide with a stored pin for the same id.
+    record.key = "unpinned:" + id
+    out.push(record)
+  }
+  return out
+}
+
+// True when any record matches on window titles. Titles change constantly, so
+// the widget only has to fold them into its change check when a record asked.
+function anyMatchTitle(records) {
+  var all = toArray(records)
+  for (var i = 0; i < all.length; i++) {
+    if (all[i] && all[i].matchTitle) return true
+  }
+  return false
+}
+
+// A cheap fingerprint of everything the unpinned set can depend on. Sorted, so
+// the compositor reordering its own list does not read as a change, and title
+// text is folded in only when some record matches on titles. Computing this
+// first is what keeps the continuous windowtitle events off the matcher pass.
+function windowFingerprint(windows, includeTitles) {
+  var all = toArray(windows)
+  var parts = []
+  for (var i = 0; i < all.length; i++) {
+    var win = all[i]
+    var part = String(win.appId || win.cls || "")
+    if (includeTitles) part += "\u0001" + String(win.title || "")
+    parts.push(part)
+  }
+  return parts.sort().join("\u0002")
+}
+
+// Whether two record lists name the same apps in the same order. Handing the
+// Repeater a fresh array tears down and rebuilds every icon, so the widget
+// only reassigns when this says something actually moved.
+function sameKeys(a, b) {
+  var left = toArray(a)
+  var right = toArray(b)
+  if (left.length !== right.length) return false
+  for (var i = 0; i < left.length; i++) {
+    if (left[i].key !== right[i].key) return false
+  }
+  return true
 }
 
 // Index of the window to focus. Without cycling that is always the first

@@ -32,6 +32,22 @@ All of it sits inline on the widget's entry in `~/.config/omarchy/shell.json`:
 }
 ```
 
+## Running apps that are not pinned
+
+With `showRunningApps` on (the default), any open window no pinned entry claims
+gets its own icon after the pinned strip, grouped one icon per application and
+removed when its last window closes.
+
+These are derived from what the compositor reports, never from `shell.json`,
+and are matched on exactly the app id or window class the window reported —
+anchored, unlike the looser word-boundary pattern a hand-written pin gets, so
+two unrelated classes can never collapse into one icon. They are ordered
+alphabetically, because the compositor reorders its own window list as focus
+moves and an icon that shifts under the pointer is worse than no icon.
+
+Right-clicking one offers **Pin to taskbar**, which stores the resolved desktop
+entry id, so the pin survives the app closing.
+
 ## Pinned entries
 
 The short form is a desktop entry id, without the `.desktop` suffix:

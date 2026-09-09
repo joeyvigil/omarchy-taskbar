@@ -29,6 +29,11 @@ Needs Omarchy 4+, with the built-in `omarchy.menu` plugin enabled.
 | **Click the `+`** | Pin an app, from a searchable list of everything installed |
 | **Hover** | App name, plus window count when more than one is open |
 
+Open an app you haven't pinned and it gets an icon too, after the pinned ones,
+with the same click behaviour. That icon disappears when its last window
+closes. Right-click it to keep it for good. Turn this off with
+`showRunningApps` if you only want the apps you chose.
+
 <img src="docs/picker.png" alt="Pinning an app from the bar" width="420">
 
 Pinning through the `+` also works out how to recognise that app's windows, so
@@ -49,6 +54,7 @@ hot-reloads on save. The bar UI writes to this same place.
 | `dimWhenClosed` | `true` | Fade icons for apps with no open window |
 | `cycleWindows` | `true` | Re-clicking a focused app advances to its next window |
 | `showAddButton` | `true` | Show the trailing `+` for pinning apps |
+| `showRunningApps` | `true` | Also show open apps that are not pinned |
 
 > **Disabling the widget discards your pins.** Omarchy stores widget settings
 > inline on the bar layout entry, and disabling removes that entry. Copy the
@@ -63,6 +69,12 @@ omarchy plugin remove io.github.joeyvigil.taskbar
 This takes the pin list with it, for the same reason as above.
 
 ## Changes
+
+**0.4.0** — Open apps you haven't pinned now appear in the bar while they're
+running, after the pinned icons, and disappear when their last window closes.
+They work like any other icon: click to focus and cycle through that app's
+windows, middle-click for a new instance. Right-click one to pin it for good.
+Set `showRunningApps` to `false` to go back to a pinned-only strip.
 
 **0.3.1** — Clicking a pinned icon repeatedly now really does cycle through
 that app's windows. Focusing a window makes Hyprland warp the pointer to the

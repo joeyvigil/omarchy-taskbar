@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.joeyvigil.taskbar",
   "name": "Taskbar",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "author": "Joey Vigil",
   "license": "MIT",
   "description": "Pinned app icons in the bar with running-state indicators; pin and unpin from the bar itself",
@@ -25,7 +25,8 @@
       "runningIndicator": true,
       "dimWhenClosed": true,
       "cycleWindows": true,
-      "showAddButton": true
+      "showAddButton": true,
+      "showRunningApps": true
     },
     "schema": [
       {
@@ -62,6 +63,11 @@
         "key": "showAddButton",
         "type": "bool",
         "label": "Show the + button for pinning apps"
+      },
+      {
+        "key": "showRunningApps",
+        "type": "bool",
+        "label": "Also show open apps that are not pinned"
       }
     ]
   }

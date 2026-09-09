@@ -33,10 +33,62 @@ BarWidget {
   readonly property bool dimWhenClosed: root.setting("dimWhenClosed", true) === true
   readonly property bool cycleWindows: root.setting("cycleWindows", true) === true
   readonly property bool showAddButton: root.setting("showAddButton", true) === true
+  readonly property bool showRunningApps: root.setting("showRunningApps", true) === true
 
-  // With nothing pinned and the + turned off the widget would be invisible, so
-  // keep a trailing slot in that case purely as an affordance.
-  readonly property bool showTrailing: root.showAddButton || root.pinned.length === 0
+  // Open apps that nothing pinned claims, rendered after the pinned strip and
+  // gone again with their last window.
+  //
+  // Two guards, cheapest first. Every window event reaches here, and the
+  // continuous windowtitle ones can change neither which apps are open nor
+  // which are claimed, so a fingerprint of the windows is compared before any
+  // matching happens. Past that, the list is still only *reassigned* when the
+  // set really moved, because handing the Repeater a fresh array tears down
+  // and rebuilds every icon.
+  property var unpinnedApps: []
+
+  // Deliberately not "": that is the real fingerprint of an empty window list.
+  readonly property string noFingerprint: "\u0000"
+  property string lastFingerprint: root.noFingerprint
+
+  function refreshUnpinned() {
+    if (!root.showRunningApps) {
+      if (root.unpinnedApps.length > 0) root.unpinnedApps = []
+      return
+    }
+
+    var fingerprint = AppModel.windowFingerprint(root.windows,
+      AppModel.anyMatchTitle(root.pinned))
+    if (fingerprint === root.lastFingerprint) return
+    root.lastFingerprint = fingerprint
+
+    var next = AppModel.unpinnedRecords(root.pinned, root.windows)
+    if (AppModel.sameKeys(next, root.unpinnedApps)) return
+    root.unpinnedApps = next
+  }
+
+  // Tracks `windows` rather than `windowSerial`: a shell restart repopulates
+  // the toplevel list without Hyprland emitting any event, so a serial-only
+  // trigger leaves the strip empty until the user happens to open or close
+  // something. `windows` re-evaluates on both.
+  onWindowsChanged: root.refreshUnpinned()
+  // Editing the pins changes what counts as unclaimed even when not a single
+  // window moved, so the fingerprint has to be dropped rather than compared.
+  onPinnedChanged: root.forgetFingerprint()
+  onShowRunningAppsChanged: root.forgetFingerprint()
+  Component.onCompleted: root.refreshUnpinned()
+
+  function forgetFingerprint() {
+    root.lastFingerprint = root.noFingerprint
+    root.refreshUnpinned()
+  }
+
+  // One model for both kinds: the slot delegate, handlePress, launch and focus
+  // are all written against a record and neither needs to know the difference.
+  readonly property var slots: root.pinned.concat(root.unpinnedApps)
+
+  // With no slots at all and the + turned off the widget would be invisible,
+  // so keep a trailing slot in that case purely as an affordance.
+  readonly property bool showTrailing: root.showAddButton || root.slots.length === 0
 
   readonly property int slotSize: root.iconSize + Style.spaceReal(9)
 
@@ -173,13 +225,26 @@ BarWidget {
       return
     }
     if (!record.desktopId) return
+
+    // A running-app record carries the window's own class, which is often but
+    // not always a desktop entry id, so resolve it to a real entry before
+    // launching. Stored pins are left alone deliberately: entryById falls back
+    // to a heuristic lookup that accepts substrings in both directions, and
+    // letting that rewrite an id the user chose is the substitution bc1459d
+    // was written to close.
+    var launchId = record.desktopId
+    if (record.unpinned) {
+      var entry = root.desktopEntry(record)
+      if (entry && entry.id) launchId = String(entry.id)
+    }
+
     if (root.appLibrary) {
       // Goes through AppLibrary so the launch OSD behaves like the menu's.
-      root.appLibrary.launch(record.desktopId, root.labelFor(record))
+      root.appLibrary.launch(launchId, root.labelFor(record))
       return
     }
     if (root.bar) {
-      root.bar.run("uwsm-app -- gtk-launch " + Util.shellQuote(record.desktopId + ".desktop"))
+      root.bar.run("uwsm-app -- gtk-launch " + Util.shellQuote(launchId + ".desktop"))
     }
   }
 
@@ -281,17 +346,7 @@ BarWidget {
     var match = root.smartMatch(id)
     if (match) record.match = match
 
-    var outcome = "ok"
-    root.mutateApps(function(current) {
-      if (AppModel.hasDesktopId(current, id)) {
-        outcome = "already pinned"
-        return null
-      }
-      var next = current.slice()
-      next.push(record)
-      return next
-    })
-    return outcome
+    return root.appendPin(record)
   }
 
   function unpinApp(desktopId) {
@@ -346,7 +401,64 @@ BarWidget {
     root.runPicker("add", "", "Pin app", options)
   }
 
+  function recordForKey(key) {
+    var index = AppModel.indexOfKey(root.slots, key)
+    return index >= 0 ? root.slots[index] : null
+  }
+
+  // Promote a running app into the pinned list. Prefer the resolved desktop
+  // entry's own id, so the stored pin is a real entry rather than whatever
+  // string the window happened to report.
+  function pinRunning(record) {
+    if (!record) return "no record"
+
+    var entry = root.desktopEntry(record)
+    if (!entry || !entry.id) {
+      // No desktop entry answers to this window class. Pin it anyway, keeping
+      // the anchored match so the icon still finds its windows; only launching
+      // a fresh instance will be unavailable.
+      return root.appendPin({ desktopId: record.desktopId, match: record.match })
+    }
+
+    var id = String(entry.id)
+    var match = root.smartMatch(id)
+    // smartMatch infers from the desktop entry, while record.match was built
+    // from a window open right now — better evidence when the inference comes
+    // up empty. Without this the new pin can fail to claim the very window
+    // that produced it, leaving the app with two icons: a dead pin and the
+    // live running-app one.
+    if (!match && !AppModel.defaultCovers(id, record.desktopId)) match = record.match
+
+    var stored = { desktopId: id }
+    if (match) stored.match = match
+    return root.appendPin(stored)
+  }
+
+  // The single place a record is appended to the stored pin list. Both the +
+  // picker and the right-click promotion come through here, so the outcome
+  // strings they report over IPC cannot drift apart.
+  function appendPin(record) {
+    var outcome = "ok"
+    root.mutateApps(function(current) {
+      if (AppModel.hasDesktopId(current, record.desktopId)) {
+        outcome = "already pinned"
+        return null
+      }
+      var next = current.slice()
+      next.push(record)
+      return next
+    })
+    return outcome
+  }
+
   function promptActions(record) {
+    if (!record) return
+    if (record.unpinned) {
+      root.runPicker("actions", record.key, root.labelFor(record),
+        ["\tNew instance\tlaunch", "\tPin to taskbar\tpin"])
+      return
+    }
+
     var index = AppModel.indexOfKey(root.pinned, record.key)
     if (index < 0) return
 
@@ -376,8 +488,11 @@ BarWidget {
   function runAction(key, action) {
     // Launching reads nothing back, so the local list is fine for it.
     if (action === "launch") {
-      var local = AppModel.indexOfKey(root.pinned, key)
-      if (local >= 0) root.launch(root.pinned[local])
+      root.launch(root.recordForKey(key))
+      return
+    }
+    if (action === "pin") {
+      root.pinRunning(root.recordForKey(key))
       return
     }
 
@@ -435,12 +550,12 @@ BarWidget {
   GridLayout {
     id: layout
     anchors.fill: parent
-    columns: root.vertical ? 1 : Math.max(1, root.pinned.length + (root.showTrailing ? 1 : 0))
+    columns: root.vertical ? 1 : Math.max(1, root.slots.length + (root.showTrailing ? 1 : 0))
     columnSpacing: root.vertical ? 0 : root.gap
     rowSpacing: root.vertical ? root.gap : 0
 
     Repeater {
-      model: root.pinned
+      model: root.slots
 
       WidgetButton {
         id: slot
