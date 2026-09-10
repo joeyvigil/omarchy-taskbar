@@ -285,20 +285,52 @@ BarWidget {
 
   // Apply an edit to the pin list.
   //
-  // `operation` receives the list as it is *stored*, read fresh inside the
-  // mutator, and returns the new list (or null to decline). It deliberately
-  // does not receive root.pinned: a bar surface exists per monitor and reloads
-  // leave instances behind, so this widget's settings can be empty on an
-  // instance that never had them injected. Building the write from that would
-  // persist an empty list and silently destroy the user's pins.
+  // `operation` receives the list as it is *stored* and returns the new list
+  // (or null to decline). It deliberately does not receive root.pinned, whose
+  // per-instance injected state can be stale on an instance that survived a
+  // reload; the read happens at write time instead.
   //
-  // `omarchy bar set --json` would be the tidier public seam, but it cannot
-  // carry this value: it forwards through `qs ipc call`, which splits every
-  // argument on commas, so any array past one element arrives as extra
-  // positional arguments and the call is rejected.
+  // Omarchy 4.0.3 capability-scopes third-party plugin shell access
+  // (services/PluginShellApi.qml): only kind "bar" plugins may mutate the
+  // whole bar config, so for a bar-widget `mutateShellConfig` returns false
+  // on every call and every pin save silently did nothing. A widget may,
+  // however, write settings to its own bar layout entry through
+  // `updateEntryInline`, which every Omarchy 4 host permits.
   function mutateApps(operation) {
     var host = root.bar ? root.bar.shell : null
-    if (!host || typeof host.mutateShellConfig !== "function") {
+    if (!host) {
+      console.warn("taskbar: no shell facade, refusing to edit pins")
+      return
+    }
+
+    if (typeof host.updateEntryInline === "function") {
+      // root.settings is what the bar host injects per instance and patches
+      // after every persist, so it holds the stored list as of the last
+      // write. Each edit runs to completion inside one input event, so the
+      // read-modify-write never spans two of the user's clicks.
+      var stored = AppModel.normalizeApps(
+        root.settings && root.settings.apps !== undefined ? root.settings.apps : [])
+      var next = operation(stored)
+      if (!next) return
+
+      // updateEntryInline replaces the entry wholesale, so carry across every
+      // other stored setting (iconSize, spacing, hand-written match/exec/…)
+      // — a pin edit must not reset the user's configuration.
+      var settings = {}
+      for (var key in root.settings) if (key !== "id") settings[key] = root.settings[key]
+      settings.apps = AppModel.serialize(next)
+
+      // updateEntryInline returns false when no layout entry answers to this
+      // id. Say so — the failure used to be indistinguishable from success.
+      if (!host.updateEntryInline(root.moduleName, settings))
+        console.warn("taskbar: no layout entry for " + root.moduleName + ", pins not saved")
+      return
+    }
+
+    // Pre-4.0.3 host: the mutator is ungated there and was the seam this
+    // widget was written against. Kept so `omarchy plugin update` can ship
+    // this fix to installs still running 4.0.2.
+    if (typeof host.mutateShellConfig !== "function") {
       console.warn("taskbar: no shell config mutator, refusing to edit pins")
       return
     }
