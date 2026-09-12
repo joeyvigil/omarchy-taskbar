@@ -16,10 +16,16 @@ duck-types on `length` instead. Trusting `Array.isArray` silently drops every
 pinned app at cold start while still working under hot-reload, which makes it a
 nasty one to catch — always test with `omarchy restart shell`, not just a save.
 
-**Pins are persisted in-process,** through the shell's own `mutateShellConfig`.
-The tidier `omarchy bar set <id> apps '[…]' --json` cannot be used: it forwards
-through `qs ipc call`, which splits every argument on commas, so any array past
-one element arrives as extra positional arguments and the call is rejected.
+**Pins are persisted in-process.** Omarchy 4.0.3 capability-scopes plugin
+shell access: only kind "bar" plugins may call `mutateShellConfig`, so the
+widget persists through `updateEntryInline` — the seam a host permits for
+writing its own bar layout entry — and falls back to the ungated mutator on
+hosts where `updateEntryInline` is absent. Both write the entry wholesale, so
+edits merge the currently stored settings rather than building them from
+scratch. The tidier `omarchy bar set <id> apps '[…]' --json` still cannot be
+used: it forwards through `qs ipc call`, which splits every argument on
+commas, so any array past one element arrives as extra positional arguments
+and the call is rejected.
 
 Files under `~/.config/omarchy/plugins/` hot-reload on save. If you develop from
 a checkout elsewhere and symlink it in, `inotify` won't see through the symlink
