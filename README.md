@@ -70,12 +70,13 @@ This takes the pin list with it, for the same reason as above.
 
 ## Changes
 
-**0.4.1** — Fix pinning on Omarchy 4.0.3. That release capability-scopes
-plugin shell access, so a bar-widget can no longer write the whole bar config:
-every pin, unpin, and reorder silently did nothing, and only apps opened
-transiently ever showed up. Pins now persist through the widget's own
-`updateEntryInline` seam, which every Omarchy 4 host permits, with a fallback
-to the old mutator for installs still running 4.0.2.
+**0.4.1** — Pinning works again on Omarchy 4.0.3. That release tightened
+what plugins may write to the bar config, and the taskbar's pin, unpin, and
+move actions were quietly declined: the `+` picker opened and let you choose
+an app, but nothing ever stuck. Pins are now saved through the widget's own
+settings entry, which is allowed on every Omarchy 4 release. Update with
+`omarchy plugin update io.github.joeyvigil.taskbar` and restart the shell.
+Thanks to @Macho0x for tracking this down and fixing it.
 
 **0.4.0** — Open apps you haven't pinned now appear in the bar while they're
 running, after the pinned icons, and disappear when their last window closes.
