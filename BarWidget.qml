@@ -184,27 +184,46 @@ BarWidget {
   }
 
   // Icon name -> absolute path, scanned from the XDG icon directories.
+  //
+  // Built a line at a time as the scan streams, so the whole listing is never
+  // held in memory at once, and capped so a pathological icon tree cannot grow
+  // it without bound. Published only when the scan ends, so the visible index
+  // never contains a half-finished scan.
   property var iconIndex: ({})
+  property var pendingIcons: null
+  property int pendingCount: 0
   property int iconSerial: 0
 
-  function indexIconLine(path, into) {
+  readonly property int iconIndexLimit: 20000
+
+  function indexIconLine(path) {
+    if (root.pendingCount >= root.iconIndexLimit) return
     var value = String(path || "").trim()
     if (!value) return
     var slash = value.lastIndexOf("/")
     var file = slash >= 0 ? value.slice(slash + 1) : value
     var dot = file.lastIndexOf(".")
     var name = dot > 0 ? file.slice(0, dot) : file
+    if (!name) return
+
+    if (!root.pendingIcons) root.pendingIcons = ({})
     // First hit wins, and the scan emits svg before png, so scalable icons
     // take precedence over bitmaps.
-    if (name && into[name] === undefined) into[name] = value
+    if (root.pendingIcons[name] !== undefined) return
+    root.pendingIcons[name] = value
+    root.pendingCount++
   }
 
-  function loadIconIndex(text) {
-    var next = ({})
-    var lines = String(text || "").split("\n")
-    for (var i = 0; i < lines.length; i++) root.indexIconLine(lines[i], next)
-    root.iconIndex = next
-    root.iconSerial++
+  function finishIconScan() {
+    // An empty result means the scan was killed by its deadline or found
+    // nothing. Keep whatever the previous scan produced rather than blanking
+    // every icon on a transient failure.
+    if (root.pendingCount > 0) {
+      root.iconIndex = root.pendingIcons
+      root.iconSerial++
+    }
+    root.pendingIcons = null
+    root.pendingCount = 0
   }
 
   function labelFor(record) {
@@ -592,22 +611,32 @@ BarWidget {
   // Some entries use a device icon (a printer, say) rather than an app icon,
   // so both contexts are indexed. svg before png so the parser, which keeps
   // the first hit per name, prefers scalable icons.
+  //
+  // This runs in a long-lived shell process against directories a user can
+  // point anywhere, so it is bounded on every axis: `timeout` ends a scan that
+  // stalls on a slow or unresponsive mount, `-maxdepth` stops an unbounded
+  // walk, awk drops the size variants of a name it has already seen (~6x fewer
+  // lines on a machine with Papirus installed), `head` caps what can reach us
+  // at all, and SplitParser hands over one line at a time so the listing is
+  // never accumulated in memory.
   Process {
     id: iconScan
     running: true
     command: ["bash", "-lc",
       'dirs="$HOME/.icons $HOME/.local/share/icons";'
       + ' IFS=":"; for d in ${XDG_DATA_DIRS:-/usr/local/share:/usr/share}; do dirs="$dirs $d/icons"; done; unset IFS;'
-      + ' for ext in svg png; do'
-      + '   for base in $dirs; do'
-      + '     [ -d "$base" ] && find "$base" \\( -path "*/apps/*" -o -path "*/devices/*" \\) -name "*.$ext" 2>/dev/null;'
-      + '   done;'
-      + '   find /usr/share/pixmaps -maxdepth 1 -name "*.$ext" 2>/dev/null;'
-      + ' done']
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.loadIconIndex(text)
+      + ' { for ext in svg png; do'
+      + '     for base in $dirs; do'
+      + '       [ -d "$base" ] && timeout 10 find "$base" -maxdepth 6 \\( -path "*/apps/*" -o -path "*/devices/*" \\) -name "*.$ext" 2>/dev/null;'
+      + '     done;'
+      + '     timeout 5 find /usr/share/pixmaps -maxdepth 1 -name "*.$ext" 2>/dev/null;'
+      + '   done; }'
+      + ' | awk -F/ \'!seen[$NF]++\' | head -n 20000']
+    stdout: SplitParser {
+      splitMarker: "\n"
+      onRead: function(line) { root.indexIconLine(line) }
     }
+    onExited: root.finishIconScan()
   }
 
   Process {
