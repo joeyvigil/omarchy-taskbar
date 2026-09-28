@@ -158,11 +158,53 @@ BarWidget {
   }
 
   function iconSource(name) {
+    var serial = root.iconSerial // binding dependency: re-resolve once scanned
+
+    // AppLibrary resolves icons best, but since Omarchy 4.0.3 the shell facade
+    // only hands it to plugins declaring kind "menu" (shell.qml,
+    // manifestHasKind), so a bar widget has to resolve them itself.
     if (root.appLibrary) return root.appLibrary.iconSource(name)
+
     var value = String(name || "")
     if (!value) return ""
+    if (value.indexOf("file://") === 0 || value.indexOf("image://") === 0) return value
     if (value.charAt(0) === "/") return Util.fileUrl(value)
+
+    // Prefer the on-disk index. A themed lookup resolves nothing at all when
+    // the configured icon theme is not installed, which is a state a user can
+    // easily be in without knowing, and it also resolves an app name like
+    // "zoom" to an unrelated action icon. This is the same trade AppLibrary
+    // makes, for the same reasons.
+    var indexed = root.iconIndex[value]
+    if (indexed) return Util.fileUrl(indexed)
+
+    // Themed lookup last, with the existence check so a miss returns "" and
+    // the delegate falls back to its letter tile rather than a broken image.
     return Quickshell.iconPath(value, true)
+  }
+
+  // Icon name -> absolute path, scanned from the XDG icon directories.
+  property var iconIndex: ({})
+  property int iconSerial: 0
+
+  function indexIconLine(path, into) {
+    var value = String(path || "").trim()
+    if (!value) return
+    var slash = value.lastIndexOf("/")
+    var file = slash >= 0 ? value.slice(slash + 1) : value
+    var dot = file.lastIndexOf(".")
+    var name = dot > 0 ? file.slice(0, dot) : file
+    // First hit wins, and the scan emits svg before png, so scalable icons
+    // take precedence over bitmaps.
+    if (name && into[name] === undefined) into[name] = value
+  }
+
+  function loadIconIndex(text) {
+    var next = ({})
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) root.indexIconLine(lines[i], next)
+    root.iconIndex = next
+    root.iconSerial++
   }
 
   function labelFor(record) {
@@ -545,6 +587,28 @@ BarWidget {
 
   implicitWidth: layout.implicitWidth
   implicitHeight: layout.implicitHeight
+
+  // App and device icons across the XDG icon dirs plus /usr/share/pixmaps.
+  // Some entries use a device icon (a printer, say) rather than an app icon,
+  // so both contexts are indexed. svg before png so the parser, which keeps
+  // the first hit per name, prefers scalable icons.
+  Process {
+    id: iconScan
+    running: true
+    command: ["bash", "-lc",
+      'dirs="$HOME/.icons $HOME/.local/share/icons";'
+      + ' IFS=":"; for d in ${XDG_DATA_DIRS:-/usr/local/share:/usr/share}; do dirs="$dirs $d/icons"; done; unset IFS;'
+      + ' for ext in svg png; do'
+      + '   for base in $dirs; do'
+      + '     [ -d "$base" ] && find "$base" \\( -path "*/apps/*" -o -path "*/devices/*" \\) -name "*.$ext" 2>/dev/null;'
+      + '   done;'
+      + '   find /usr/share/pixmaps -maxdepth 1 -name "*.$ext" 2>/dev/null;'
+      + ' done']
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.loadIconIndex(text)
+    }
+  }
 
   Process {
     id: pickerProc

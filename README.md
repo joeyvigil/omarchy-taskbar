@@ -70,6 +70,14 @@ This takes the pin list with it, for the same reason as above.
 
 ## Changes
 
+**0.4.2** — Icons show again instead of letters. Omarchy 4.0.3 also stopped
+handing bar widgets the shell's app library, which is what had been resolving
+icons; without it the taskbar fell back to the system icon theme, and anyone
+whose configured theme is missing or incomplete got a letter in every slot.
+The taskbar now finds icons itself, so it no longer depends on the theme being
+installed. If icons are missing in other apps too, the theme itself is worth
+checking.
+
 **0.4.1** — Pinning works again on Omarchy 4.0.3. That release tightened
 what plugins may write to the bar config, and the taskbar's pin, unpin, and
 move actions were quietly declined: the `+` picker opened and let you choose
