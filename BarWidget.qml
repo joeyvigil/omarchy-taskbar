@@ -238,19 +238,29 @@ BarWidget {
   // The shell one-liner that focuses `descriptor` while holding the pointer
   // still. Split out from focusWindow so it can be inspected directly.
   function focusCommand(descriptor) {
-    // Quickshell reports the address bare ("55bd…"); Hyprland's dispatcher
-    // wants it prefixed. A bad address is only a warning there, exit 0, so
-    // getting this wrong fails silently rather than reaching the fallback.
-    var hex = String(descriptor.address || "")
-    var target = "address:" + (hex.indexOf("0x") === 0 ? hex : "0x" + hex)
+    // Both values below are interpolated into Lua that hyprctl evaluates.
+    // Util.shellQuote guards the shell layer only; a compositor value carrying
+    // a quote or brace would still rewrite the Lua. So neither is trusted on
+    // shape: the address is validated here, and the cursor position is
+    // validated in the shell before it can reach the dispatch.
+    var hex = AppModel.windowAddressHex(descriptor ? descriptor.address : "")
+    if (!hex) return ""
+
+    var target = "address:" + hex
     var focusLua = 'hl.dsp.focus({ window = "' + target + '" })'
-    return "p=$(hyprctl cursorpos 2>/dev/null | tr -d ' '); "
+
+    // awk both validates and normalises: it emits "<int> <int>" only when the
+    // reply is exactly two integers (negative on monitors left of origin), and
+    // nothing at all otherwise, so only numbers can reach the Lua below.
+    return "pos=$(hyprctl cursorpos 2>/dev/null | awk -F, "
+      + "'NR==1 && $1 ~ /^[ \t]*-?[0-9]+[ \t]*$/ && $2 ~ /^[ \t]*-?[0-9]+[ \t]*$/"
+      + " { gsub(/[ \t]/, \"\", $1); gsub(/[ \t]/, \"\", $2); print $1, $2 }'); "
       // Hyprland's Lua parser rejects the legacy string form and exits 7,
       // which is what selects the fallback on older, non-Lua configs.
       + "hyprctl dispatch " + Util.shellQuote(focusLua) + " >/dev/null 2>&1 || "
       + "hyprctl dispatch focuswindow " + Util.shellQuote(target) + " >/dev/null 2>&1; "
-      + 'case "$p" in *,*) hyprctl dispatch '
-      + '"hl.dsp.cursor.move({ x = ${p%%,*}, y = ${p#*,} })" >/dev/null 2>&1 ;; esac'
+      + '[ -n "$pos" ] && hyprctl dispatch '
+      + '"hl.dsp.cursor.move({ x = ${pos%% *}, y = ${pos##* } })" >/dev/null 2>&1'
   }
 
   function focusWindow(descriptor) {
@@ -268,8 +278,13 @@ BarWidget {
     // back on the bar does not steal focus: it is a layer surface, and
     // follow_mouse only refocuses when the pointer is over a window.
     if (descriptor.address && root.bar && typeof root.bar.run === "function") {
-      root.bar.run(root.focusCommand(descriptor))
-      return
+      // Empty when the address did not validate; fall through to activation
+      // rather than dispatching something built from a value we do not trust.
+      var command = root.focusCommand(descriptor)
+      if (command) {
+        root.bar.run(command)
+        return
+      }
     }
 
     // No way to run commands: fall back to the compositor's own

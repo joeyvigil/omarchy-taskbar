@@ -239,6 +239,20 @@ function unpinnedRecords(pinned, windows) {
   return out
 }
 
+// A Hyprland window address, normalised to the 0x-prefixed lowercase hex the
+// dispatcher expects, or "" when the value is not an address at all.
+//
+// Quickshell reports these bare ("55bd5557a780"). They are interpolated into
+// the Lua that hyprctl evaluates, and shell quoting only guards the shell
+// layer — a value carrying a quote or brace would change the Lua itself. So
+// the shape is checked here rather than trusted because it usually looks fine.
+function windowAddressHex(value) {
+  var text = String(value || "").trim()
+  if (text.slice(0, 2) === "0x" || text.slice(0, 2) === "0X") text = text.slice(2)
+  if (!/^[0-9a-fA-F]{1,32}$/.test(text)) return ""
+  return "0x" + text.toLowerCase()
+}
+
 // True when any record matches on window titles. Titles change constantly, so
 // the widget only has to fold them into its change check when a record asked.
 function anyMatchTitle(records) {
